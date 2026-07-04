@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF 合并打印</title>
+<script src="lib/pdf-lib.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f5f5;
+    --card: #fff;
+    --text: #333;
+    --text-secondary: #666;
+    --border: #e0e0e0;
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
+    --danger: #ef4444;
+    --radius: 8px;
+    --shadow: 0 1px 3px rgba(0,0,0,.1);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* Header */
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    box-shadow: var(--shadow);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header p { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+
+  /* Layout */
+  .layout {
+    display: flex; gap: 24px;
+    max-width: 1400px; margin: 24px auto; padding: 0 24px;
+  }
+  .panel { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .panel-left { flex: 0 0 440px; display: flex; flex-direction: column; gap: 20px; }
+  .panel-right { flex: 1; min-height: 600px; }
+
+  /* Sections */
+  .section { padding: 20px; }
+  .section + .section { border-top: 1px solid var(--border); }
+  .section-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+
+  /* Upload area */
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 32px; text-align: center;
+    cursor: pointer; transition: border-color .2s, background .2s;
+  }
+  .upload-zone:hover, .upload-zone.dragover {
+    border-color: var(--primary);
+    background: #eff6ff;
+  }
+  .upload-zone svg { color: #999; margin-bottom: 8px; }
+  .upload-zone p { color: var(--text-secondary); font-size: 14px; }
+  .upload-zone .hint { font-size: 12px; color: #999; margin-top: 4px; }
+
+  /* File list */
+  .file-list { max-height: 200px; overflow-y: auto; }
+  .file-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 6px;
+    font-size: 13px;
+  }
+  .file-item:hover { background: var(--bg); }
+  .file-item .idx { color: var(--text-secondary); font-size: 11px; min-width: 20px; }
+  .file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-item .size { color: var(--text-secondary); font-size: 11px; }
+  .file-item .remove {
+    background: none; border: none; color: var(--danger);
+    cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px;
+  }
+  .empty-hint { text-align: center; color: #bbb; font-size: 13px; padding: 16px 0; }
+
+  /* Config */
+  .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .config-item { display: flex; flex-direction: column; gap: 4px; }
+  .config-item label { font-size: 12px; color: var(--text-secondary); }
+  .config-item input, .config-item select {
+    padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: 6px; font-size: 14px; outline: none;
+  }
+  .config-item input:focus, .config-item select:focus { border-color: var(--primary); }
+  .config-check { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-top: 8px; }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 10px 20px; border: none; border-radius: var(--radius);
+    font-size: 14px; font-weight: 500; cursor: pointer;
+    transition: background .2s;
+  }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-primary:disabled { background: #93c5fd; cursor: not-allowed; }
+  .btn-outline { background: #fff; color: var(--primary); border: 1px solid var(--primary); }
+  .btn-outline:hover { background: #eff6ff; }
+  .btn-danger { background: #fff; color: var(--danger); border: 1px solid var(--danger); }
+  .btn-danger:hover { background: #fef2f2; }
+  .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* Progress */
+  .progress-wrap { margin-top: 12px; }
+  .progress-bar {
+    width: 100%; height: 6px; background: var(--border);
+    border-radius: 3px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: var(--primary);
+    border-radius: 3px; transition: width .3s;
+  }
+  .progress-text { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+  .msg-error { color: var(--danger); font-size: 13px; margin-top: 8px; }
+  .msg-success { color: #16a34a; font-size: 13px; margin-top: 8px; }
+
+  /* Preview */
+  .preview-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px;
+  }
+  .preview-body {
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    min-height: 500px;
+  }
+  .preview-body iframe {
+    width: 100%; height: 75vh; border: none; border-radius: 0 0 var(--radius) var(--radius);
+  }
+  .preview-placeholder { color: #ccc; font-size: 15px; text-align: center; padding: 60px 20px; }
+  .preview-placeholder svg { margin-bottom: 12px; }
+
+  /* Mobile */
+  @media (max-width: 900px) {
+    .layout { flex-direction: column; padding: 0 12px; margin: 12px auto; }
+    .panel-left { flex: none; }
+    .panel-right { min-height: 400px; }
+    .preview-body iframe { height: 60vh; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📄 报销 PDF 合并打印</h1>
+  <p>上传多个 PDF → 自动排版到 A4 页面 → 预览 &amp; 下载</p>
+</header>
+
+<div class="layout">
+  <!-- Left Panel -->
+  <div class="panel panel-left">
+    <!-- Upload -->
+    <div class="section">
+      <div class="section-title">上传 PDF</div>
+      <div class="upload-zone" id="uploadZone">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <p>拖拽 PDF 到此处，或点击上传</p>
+        <p class="hint">支持多选 · 每个 PDF 仅读取第 1 页</p>
+        <input type="file" id="fileInput" multiple accept=".pdf,application/pdf" hidden>
+      </div>
+      <div class="file-list" id="fileList">
+        <div class="empty-hint">暂无文件</div>
+      </div>
+    </div>
+
+    <!-- Config -->
+    <div class="section">
+      <div class="section-title">合并设置</div>
+      <div class="config-grid">
+        <div class="config-item">
+          <label>每页行数</label>
+          <input type="number" id="rows" value="2" min="1" max="10">
+        </div>
+        <div class="config-item">
+          <label>每页列数</label>
+          <input type="number" id="cols" value="1" min="1" max="10">
+        </div>
+        <div class="config-item">
+          <label>边距 (pt)</label>
+          <input type="number" id="margin" value="10" min="0" max="100">
+        </div>
+        <div class="config-item">
+          <label>间距 (pt)</label>
+          <input type="number" id="gap" value="10" min="0" max="100">
+        </div>
+      </div>
+      <label class="config-check">
+        <input type="checkbox" id="repeat" checked>
+        每页重复同一 PDF（关闭则不同 PDF 拼接在同一页）
+      </label>
+    </div>
+
+    <!-- Actions -->
+    <div class="section">
+      <div class="btn-group">
+        <button class="btn btn-primary" id="btnMerge" disabled>合并生成</button>
+        <button class="btn btn-outline" id="btnClear" disabled>清空列表</button>
+      </div>
+      <div class="progress-wrap" id="progressWrap" hidden>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+        <p class="progress-text" id="progressText"></p>
+      </div>
+      <div id="msgArea"></div>
+    </div>
+  </div>
+
+  <!-- Right Panel: Preview -->
+  <div class="panel panel-right" id="previewPanel">
+    <div class="preview-header">
+      <span class="section-title" style="margin:0">预览</span>
+      <button class="btn btn-primary btn-sm" id="btnDownload" hidden>⬇ 下载 PDF</button>
+    </div>
+    <div class="preview-body" id="previewBody">
+      <div class="preview-placeholder" id="previewPlaceholder">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+        <p>合并后的 PDF 预览将显示在这里</p>
+      </div>
+      <iframe id="previewIframe" hidden></iframe>
+    </div>
+  </div>
+</div>
+
+<script>
+const A4_W = 595.28, A4_H = 841.89;
+
+// State
+let files = [];
+let mergedPdfBytes = null;
+
+// DOM
+const uploadZone = document.getElementById('uploadZone');
+const fileInput = document.getElementById('fileInput');
+const fileList = document.getElementById('fileList');
+const btnMerge = document.getElementById('btnMerge');
+const btnClear = document.getElementById('btnClear');
+const btnDownload = document.getElementById('btnDownload');
+const progressWrap = document.getElementById('progressWrap');
+const progressFill = document.getElementById('progressFill');
+const progressText = document.getElementById('progressText');
+const msgArea = document.getElementById('msgArea');
+const previewIframe = document.getElementById('previewIframe');
+const previewPlaceholder = document.getElementById('previewPlaceholder');
+
+// Upload events
+uploadZone.addEventListener('click', () => fileInput.click());
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('dragover');
+  addFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', () => {
+  addFiles(fileInput.files);
+  fileInput.value = '';
+});
+
+function addFiles(fileList) {
+  const newFiles = Array.from(fileList).filter(f => f.type === 'application/pdf' || f.name.endsWith('.pdf'));
+  files.push(...newFiles);
+  renderFileList();
+}
+
+function removeFile(index) {
+  files.splice(index, 1);
+  renderFileList();
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function renderFileList() {
+  if (files.length === 0) {
+    fileList.innerHTML = '<div class="empty-hint">暂无文件</div>';
+  } else {
+    fileList.innerHTML = files.map((f, i) => `
+      <div class="file-item">
+        <span class="idx">${i + 1}.</span>
+        <span class="name">${f.name}</span>
+        <span class="size">${formatSize(f.size)}</span>
+        <button class="remove" title="移除" onclick="removeFile(${i})">×</button>
+      </div>
+    `).join('');
+  }
+  btnMerge.disabled = files.length === 0;
+  btnClear.disabled = files.length === 0;
+}
+
+btnClear.addEventListener('click', () => {
+  files = [];
+  mergedPdfBytes = null;
+  renderFileList();
+  previewIframe.hidden = true;
+  previewPlaceholder.hidden = false;
+  btnDownload.hidden = true;
+  msgArea.innerHTML = '';
+  progressWrap.hidden = true;
+});
+
+// Merge logic
+btnMerge.addEventListener('click', async () => {
+  if (files.length === 0) return;
+
+  btnMerge.disabled = true;
+  btnMerge.textContent = '合并中...';
+  progressWrap.hidden = false;
+  msgArea.innerHTML = '';
+
+  const rows = parseInt(document.getElementById('rows').value) || 2;
+  const cols = parseInt(document.getElementById('cols').value) || 1;
+  const margin = parseFloat(document.getElementById('margin').value) || 10;
+  const gap = parseFloat(document.getElementById('gap').value) || 10;
+  const repeat = document.getElementById('repeat').checked;
+  const cellsPerPage = rows * cols;
+
+  try {
+    const { PDFDocument } = PDFLib;
+    const mergedDoc = await PDFDocument.create();
+
+    const cellW = (A4_W - 2 * margin - (cols - 1) * gap) / cols;
+    const cellH = (A4_H - 2 * margin - (rows - 1) * gap) / rows;
+
+    const total = repeat ? files.length : files.length;
+    let done = 0;
+
+    if (repeat) {
+      // Each PDF gets its own page, repeated in all cells
+      for (const file of files) {
+        const buf = await file.arrayBuffer();
+        const srcDoc = await PDFDocument.load(buf, { ignoreEncryption: true });
+        const [embeddedPage] = await mergedDoc.embedPdf(srcDoc, [0]);
+
+        const page = mergedDoc.addPage([A4_W, A4_H]);
+
+        for (let slot = 0; slot < cellsPerPage; slot++) {
+          const r = Math.floor(slot / cols);
+          const c = slot % cols;
+          drawCell(page, embeddedPage, cellW, cellH, r, c, margin, gap);
+        }
+
+        done++;
+        updateProgress(done, total, file.name);
+      }
+    } else {
+      // Multiple PDFs fill cells across pages
+      for (let i = 0; i < files.length; i += cellsPerPage) {
+        const page = mergedDoc.addPage([A4_W, A4_H]);
+
+        for (let slot = 0; slot < cellsPerPage; slot++) {
+          const idx = i + slot;
+          if (idx >= files.length) break;
+
+          const buf = await files[idx].arrayBuffer();
+          const srcDoc = await PDFDocument.load(buf, { ignoreEncryption: true });
+          const [embeddedPage] = await mergedDoc.embedPdf(srcDoc, [0]);
+
+          const r = Math.floor(slot / cols);
+          const c = slot % cols;
+          drawCell(page, embeddedPage, cellW, cellH, r, c, margin, gap);
+
+          done++;
+          updateProgress(done, files.length, files[idx].name);
+        }
+      }
+    }
+
+    mergedPdfBytes = await mergedDoc.save();
+    const blob = new Blob([mergedPdfBytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+
+    // Revoke old URL to free memory
+    if (previewIframe.src) URL.revokeObjectURL(previewIframe.src);
+    previewIframe.src = url;
+    previewIframe.hidden = false;
+    previewPlaceholder.hidden = true;
+    btnDownload.hidden = false;
+
+    progressText.textContent = `✅ 完成 — ${files.length} 个 PDF → ${mergedDoc.getPageCount()} 页`;
+    msgArea.innerHTML = '<p class="msg-success">合并完成！右侧可预览，点击下载保存。</p>';
+  } catch (err) {
+    console.error(err);
+    msgArea.innerHTML = `<p class="msg-error">合并失败: ${err.message}</p>`;
+    progressText.textContent = '❌ 合并失败';
+  } finally {
+    btnMerge.disabled = files.length === 0;
+    btnMerge.textContent = '合并生成';
+  }
+});
+
+function drawCell(page, embeddedPage, cellW, cellH, row, col, margin, gap) {
+  const srcW = embeddedPage.width;
+  const srcH = embeddedPage.height;
+  const scale = Math.min(cellW / srcW, cellH / srcH);
+  const newW = srcW * scale;
+  const newH = srcH * scale;
+
+  const cellX = margin + col * (cellW + gap);
+  const cellY = margin + row * (cellH + gap);
+  const x = cellX + (cellW - newW) / 2;
+  const y = cellY + (cellH - newH) / 2;
+
+  // In PDF coordinate system, y is from bottom
+  const pdfY = A4_H - y - newH;
+  page.drawPage(embeddedPage, { x, y: pdfY, width: newW, height: newH });
+}
+
+function updateProgress(done, total, name) {
+  const pct = Math.round((done / total) * 100);
+  progressFill.style.width = pct + '%';
+  progressText.textContent = `处理中 ${done}/${total}: ${name}`;
+}
+
+// Download
+btnDownload.addEventListener('click', () => {
+  if (!mergedPdfBytes) return;
+  const blob = new Blob([mergedPdfBytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '报销打印_合并.pdf';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+</script>
+
+</body>
+</html>
