@@ -265,9 +265,6 @@ function ensurePdfjsWorker() {
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
     return Promise.resolve();
   }
-  if (globalThis.pdfjsWorker && globalThis.pdfjsWorker.WorkerMessageHandler) {
-    return Promise.resolve();
-  }
   pdfjsWorkerReady = pdfjsWorkerReady || new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = 'lib/pdf.worker.min.js';
@@ -337,28 +334,29 @@ btnClear.addEventListener('click', () => {
   progressWrap.hidden = true;
 });
 
+// 自动裁剪参数（pt 为语义单位，px 阈值按 RENDER_SCALE 派生）
+const RENDER_SCALE = 0.5;               // 内容检测渲染倍率
+const STRAY_GAP_PX = 30 * RENDER_SCALE; // 孤立块与主内容的最小空白间隔（30pt）
+const INK_GRAY_THRESHOLD = 248;         // RGB 任一通道低于此值即算墨迹（容忍压缩噪声）
+const CROP_PAD_PT = 3;                  // 裁剪边界四周余量
+
 // 从某一侧剔除零散内容块（页脚/页码/水印）：
-// 与后续内容间隔 ≥30pt 纯空白，且自身墨迹 ≤10%、尺寸 ≤25% 的孤立块才丢弃
+// 与后续内容间隔 ≥STRAY_GAP_PX 纯空白，且自身墨迹 ≤10%、尺寸 ≤25% 的孤立块才丢弃
 function trimStrayEdge(ink, lo, hi, fromStart, totalInk) {
-  const GAP_PX = 15; // 15px × 2pt/px = 30pt
   const span = hi - lo + 1;
   const step = fromStart ? 1 : -1;
   const atEnd = i => (fromStart ? i > hi : i < lo);
   let keep = fromStart ? lo : hi;
   let i = keep;
   while (!atEnd(i)) {
-    while (!atEnd(i) && ink[i] === 0) i += step;  // 跳过空白
-    if (atEnd(i)) break;                          // 该侧无内容
-    const blockStart = i;
-    while (!atEnd(i) && ink[i] > 0) i += step;    // 走完当前块
-    const blockEnd = i;
-    const blockSpan = Math.abs(blockEnd - blockStart);
+    const blockStart = i; // lo/hi 与每次丢弃后的 i 都停在墨迹上
     let blockInk = 0;
-    for (let k = blockStart; k !== blockEnd; k += step) blockInk += ink[k];
+    while (!atEnd(i) && ink[i] > 0) { blockInk += ink[i]; i += step; } // 走完当前块
+    const blockSpan = Math.abs(i - blockStart);
     let gap = 0;
     while (!atEnd(i) && ink[i] === 0) { i += step; gap++; }
     if (atEnd(i)) break;                          // 当前块已是最后一层 → 主内容，保留
-    if (gap < GAP_PX) break;                      // 与后续内容紧邻 → 保留
+    if (gap < STRAY_GAP_PX) break;                // 与后续内容紧邻 → 保留
     if (blockInk > totalInk * 0.10) break;        // 墨迹显著 → 保留
     if (blockSpan > span * 0.25) break;           // 尺寸显著（如细高侧栏）→ 保留
     keep = i;                                     // 判定为零散块，丢弃
@@ -376,34 +374,30 @@ async function detectContentBBox(data) {
   }).promise;
   try {
     const page = await pdf.getPage(1);
-    const viewport = page.getViewport({ scale: 0.5 });
+    const viewport = page.getViewport({ scale: RENDER_SCALE });
     const canvas = document.createElement('canvas');
     canvas.width = Math.ceil(viewport.width);
     canvas.height = Math.ceil(viewport.height);
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    await page.render({ canvasContext: ctx, viewport }).promise; // pdf.js 默认白底填充
 
     const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-    let minX = Infinity, minY = Infinity, maxX = -1, maxY = -1, totalInk = 0;
     const rowInk = new Array(canvas.height).fill(0);
     const colInk = new Array(canvas.width).fill(0);
-    for (let y = 0; y < canvas.height; y++) {
-      for (let x = 0; x < canvas.width; x++) {
-        const i = (y * canvas.width + x) * 4;
-        if (px[i] < 248 || px[i + 1] < 248 || px[i + 2] < 248) {
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
+    for (let y = 0, i = 0; y < canvas.height; y++) {
+      for (let x = 0; x < canvas.width; x++, i += 4) {
+        if (px[i] < INK_GRAY_THRESHOLD || px[i + 1] < INK_GRAY_THRESHOLD || px[i + 2] < INK_GRAY_THRESHOLD) {
           rowInk[y]++;
           colInk[x]++;
-          totalInk++;
         }
       }
     }
-    if (maxX < 0) return null; // 整页空白
+    const totalInk = rowInk.reduce((a, b) => a + b, 0);
+    const minY = rowInk.findIndex(v => v > 0);
+    if (minY < 0) return null; // 整页空白
+    const maxY = rowInk.findLastIndex(v => v > 0);
+    const minX = colInk.findIndex(v => v > 0);
+    const maxX = colInk.findLastIndex(v => v > 0);
 
     const top = trimStrayEdge(rowInk, minY, maxY, true, totalInk);
     const bottom = trimStrayEdge(rowInk, minY, maxY, false, totalInk);
@@ -412,18 +406,15 @@ async function detectContentBBox(data) {
     if (right < left || bottom < top) return null; // 保险：剔除异常时回退整页
 
     // 像素坐标 → PDF 坐标（convertToPdfPoint 自带旋转与原点换算）
-    const corners = [
+    const [p1, p2] = [
       viewport.convertToPdfPoint(left, top),
       viewport.convertToPdfPoint(right + 1, bottom + 1),
     ];
-    const xs = corners.map(p => p[0]);
-    const ys = corners.map(p => p[1]);
-    const pad = 3; // 留 3pt 余量，避免贴边内容被裁
     const bbox = {
-      left: Math.min(...xs) - pad,
-      right: Math.max(...xs) + pad,
-      bottom: Math.min(...ys) - pad,
-      top: Math.max(...ys) + pad,
+      left: Math.min(p1[0], p2[0]) - CROP_PAD_PT,
+      right: Math.max(p1[0], p2[0]) + CROP_PAD_PT,
+      bottom: Math.min(p1[1], p2[1]) - CROP_PAD_PT,
+      top: Math.max(p1[1], p2[1]) + CROP_PAD_PT,
     };
     if (bbox.right - bbox.left < 1 || bbox.top - bbox.bottom < 1) return null;
     return bbox;
@@ -434,18 +425,17 @@ async function detectContentBBox(data) {
 
 // 加载文件首页并嵌入；autoCrop 开启时裁剪到内容区域，失败回退整页
 async function embedFilePage(doc, file, autoCrop) {
-  const srcDoc = await PDFLib.PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
-  const srcPage = srcDoc.getPage(0);
-  if (autoCrop && window.pdfjsLib) {
-    try {
-      // 重新读取一份 buffer：pdf.js 会把传入的 ArrayBuffer 转移给 worker
-      const bbox = await detectContentBBox(await file.arrayBuffer());
-      if (bbox) return await doc.embedPage(srcPage, bbox);
-    } catch (e) {
-      console.warn('自动裁剪失败，回退整页:', file.name, e);
-    }
-  }
-  return await doc.embedPage(srcPage);
+  const buf = await file.arrayBuffer();
+  // pdf-lib 解析与 pdf.js 检测互不依赖，并行执行；
+  // pdf.js 会转移传入的 ArrayBuffer，检测用内存拷贝而非二次读盘
+  const cropPromise = autoCrop
+    ? detectContentBBox(buf.slice(0)).catch(e => {
+        console.warn('自动裁剪失败，回退整页:', file.name, e);
+        return null;
+      })
+    : null;
+  const srcPage = (await PDFLib.PDFDocument.load(buf, { ignoreEncryption: true })).getPage(0);
+  return doc.embedPage(srcPage, (await cropPromise) || undefined);
 }
 
 // Merge logic
@@ -472,7 +462,7 @@ btnMerge.addEventListener('click', async () => {
     const cellW = (A4_W - 2 * margin - (cols - 1) * gap) / cols;
     const cellH = (A4_H - 2 * margin - (rows - 1) * gap) / rows;
 
-    const total = repeat ? files.length : files.length;
+    const total = files.length;
     let done = 0;
 
     if (repeat) {
